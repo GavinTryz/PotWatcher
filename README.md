@@ -1,5 +1,6 @@
 # PotWatcher
-Just a personal program built for an ESP32 placed above a stove. A watched pot never boils, so this program is built so that I can tell my Google Home to "watch my pot for me" and the ESP32 will start monitoring the humidity above my stove. When a certain threshold is reached, my Google Home will speak up, letting me know my pot of water is now boiling.
+__"A watched pot never boils."__
+My stove is incredibly slow, so I built this program so that I can tell my Google Home to "watch my pot for me". From there, an ESP32 will begin to monitor humidity around my stove, and notify me via my Google Home when my water is done boiling.
 
 Code by Gavin Tryzbiak
 

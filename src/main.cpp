@@ -1,0 +1,173 @@
+/*
+ * 
+ *  PotWatcher - v1.0
+ *  Code by Gavin Tryzbiak
+ *  https://github.com/GavinTryz
+ *  
+ *  Personal program built for ESP32 to make my Google Home tell me when my water on the stove is boiling.
+ *  
+ */
+
+#include "credentials.h"
+#include "OTA.h"
+#include <Arduino.h>
+#include <WiFi.h>
+#include "Adafruit_MQTT.h"
+#include "Adafruit_MQTT_Client.h"
+#include <DHT.h>
+#include <esp8266-google-home-notifier.h>
+#include <EEPROM.h>
+
+GoogleHomeNotifier ghn;
+DHT dht(DHT_PIN, DHT_TYPE);
+
+// MQTT Setup
+WiFiClient client;
+Adafruit_MQTT_Client mqtt(&client, ADAFRUITIO_SERVER, ADAFRUITIO_SERVERPORT, ADAFRUITIO_USER, ADAFRUITIO_KEY);
+Adafruit_MQTT_Subscribe commandFeed = Adafruit_MQTT_Subscribe(&mqtt, ADAFRUITIO_USER ADAFRUITIO_FEED);
+Adafruit_MQTT_Publish reportFeed = Adafruit_MQTT_Publish(&mqtt, ADAFRUITIO_USER ADAFRUITIO_FEED);
+
+// Variables
+boolean takeMeasurements = false;
+
+void MQTT_connect();
+
+void setup()
+{
+  // Utilities setup
+  Serial.begin(115200);
+  EEPROM.begin(1); // The humidity threshold (*1* byte) will be stored in address 0 of EEPROM to avoid losing it during power loss
+  dht.begin();
+  
+  // Set device name for OTA updates
+  // GoogleHomeNotifier seems to stop this from working, but there doesn't appear to be side effects. Kept in the off chance GHN is updated.
+  ArduinoOTA.setHostname("PotWatcher"); 
+
+  // WiFi setup
+  Serial.print("Connecting to WiFi network");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(150);
+    Serial.print(".");
+  }
+  Serial.print("\nConnected! IP: ");
+  Serial.println(WiFi.localIP());
+  
+  // ESP32 Over-The-Air Update setup
+  setupOTA();
+
+  // Google Home setup
+  Serial.println("Connecting to Google Home...");
+  if (ghn.device(GOOGLE_HOME_NAME, "en") != true)
+  {
+    Serial.println(ghn.getLastError());
+    return;
+  }
+  Serial.print("Found Google Home (");
+  Serial.print(ghn.getIPAddress());
+  Serial.print(":");
+  Serial.print(ghn.getPort());
+  Serial.println(")");
+
+  // Complete MQTT setup
+  mqtt.subscribe(&commandFeed);
+
+  // Startup phrase
+  String startupPhrase = "Pot Watcher available. The current threshold is set to " + String(EEPROM.read(0)) + " percent. You can change this by telling me to set the threshold.";
+  if (ghn.notify(startupPhrase.c_str()) != true)
+    Serial.println(ghn.getLastError());
+}
+
+void loop()
+{
+  MQTT_connect(); // Make sure ESP32 is connected to broker
+
+  if(takeMeasurements)
+  {
+    byte humidity = (byte)dht.readHumidity();
+    Serial.println("Measured humidity of " + String(humidity) + "%");
+    if(humidity > EEPROM.read(0))
+    {
+      Serial.println("Water is boiling!");
+      takeMeasurements = false;
+      reportFeed.publish("potwatcher boiling");
+      if (ghn.notify("The water is now boiling.") != true)
+        Serial.println(ghn.getLastError());
+    }
+  }
+
+  Adafruit_MQTT_Subscribe *tempSubscription;
+  while((tempSubscription = mqtt.readSubscription(3000)))
+  {
+    // Verify subscription matches expected feed (not strictly necessary in a 1-feed program, but good practice)
+    if(tempSubscription == &commandFeed)
+    {
+      // Execute commands (if intended for PotWatcher)
+      String command = (char *)commandFeed.lastread;
+
+      Serial.print("Heard command: ");
+      Serial.println(command);
+
+      if(command.equals("potwatcher watch")) // Watch
+      {
+        Serial.println("Now watching pot.");
+        takeMeasurements = true;
+      }
+      else if(command.equals("potwatcher stop")) // Stop
+      {
+        Serial.println("No longer watching pot.");
+        takeMeasurements = false;
+      }
+      else if(command.equals("potwatcher getHumidity")) // Get humidity
+      {
+        Serial.println("Saying the humidity.");
+        String humidityPhrase = "The stove humidity sensor reads " + String((int)dht.readHumidity()) + " percent";
+        if (ghn.notify(humidityPhrase.c_str()) != true)
+          Serial.println(ghn.getLastError());
+      }
+      else if(command.equals("potwatcher updateThreshold")) // Update threshold (to current humidity value. Stored in EEPROM address 0 so it is not forgotten on restart)
+      {
+        Serial.println("Saving the current humidity as the threshold to EEPROM.");
+        EEPROM.write(0, (byte)dht.readHumidity());
+        EEPROM.commit();
+      }
+      else if(command.substring(0, 23).equals("potwatcher setThreshold")) // Set threshold ()
+      {
+        Serial.println("Saving " + command.substring(24) + " to EEPROM.");
+        EEPROM.write(0, (byte)(command.substring(24).toInt()));
+        EEPROM.commit();
+      }
+      else
+      {
+        Serial.println("Command not intended for PotWatcher. (Or an error has occurred)");
+      }
+    }
+  }
+
+  ArduinoOTA.handle(); // Handle OTA update system (~40us)
+}
+
+// MQTT connection helper
+void MQTT_connect()
+{
+  int8_t ret;
+
+  // Stop if already connected.
+  if (mqtt.connected())
+  {
+    return;
+  }
+
+  Serial.print("Connecting to MQTT... ");
+
+  while ((ret = mqtt.connect()) != 0)
+  { // connect will return 0 for connected
+    Serial.println(mqtt.connectErrorString(ret));
+    Serial.println("Retrying MQTT connection in 5 seconds...");
+    mqtt.disconnect();
+    delay(5000); // wait 5 seconds
+  }
+  Serial.println("MQTT Connected!");
+}

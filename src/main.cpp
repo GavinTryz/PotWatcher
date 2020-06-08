@@ -30,7 +30,9 @@ Adafruit_MQTT_Publish reportFeed = Adafruit_MQTT_Publish(&mqtt, ADAFRUITIO_USER 
 // Variables
 boolean takeMeasurements = false;
 
+void WiFi_connect();
 void MQTT_connect();
+void GHN_setup();
 
 void setup()
 {
@@ -38,50 +40,28 @@ void setup()
   Serial.begin(115200);
   EEPROM.begin(1); // The humidity threshold (*1* byte) will be stored in address 0 of EEPROM to avoid losing it during power loss
   dht.begin();
-  
-  // Set device name for OTA updates
-  // GoogleHomeNotifier seems to stop this from working, but there doesn't appear to be side effects. Kept in the off chance GHN is updated.
-  ArduinoOTA.setHostname("PotWatcher"); 
-
-  // WiFi setup
-  Serial.print("Connecting to WiFi network");
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    delay(150);
-    Serial.print(".");
-  }
-  Serial.print("\nConnected! IP: ");
-  Serial.println(WiFi.localIP());
-  
-  // ESP32 Over-The-Air Update setup
+  ArduinoOTA.setHostname("PotWatcher"); // GoogleHomeNotifier seems to stop this from working, but there doesn't appear to be side effects. Kept in the off chance GHN is updated.
+  WiFi_connect();
+  GHN_setup();
   setupOTA();
-
-  // Google Home setup
-  Serial.println("Connecting to Google Home...");
-  if (ghn.device(GOOGLE_HOME_NAME, "en") != true)
-  {
-    Serial.println(ghn.getLastError());
-    return;
-  }
-  Serial.print("Found Google Home (");
-  Serial.print(ghn.getIPAddress());
-  Serial.print(":");
-  Serial.print(ghn.getPort());
-  Serial.println(")");
-
-  // Complete MQTT setup
-  mqtt.subscribe(&commandFeed);
-
-  // Startup phrase
-  String startupPhrase = "Pot Watcher available. The current threshold is set to " + String(EEPROM.read(0)) + " percent. You can change this by telling me to set the threshold.";
-  if (ghn.notify(startupPhrase.c_str()) != true)
-    Serial.println(ghn.getLastError());
 }
 
 void loop()
 {
+  // Utilities verification
+  while(WiFi.status() != WL_CONNECTED)
+  {
+    WiFi.disconnect();
+    WiFi_connect();
+    if(WiFi.status() == WL_CONNECTED)
+    {
+      GHN_setup();
+      mqtt.subscribe(&commandFeed);
+    }
+    else
+      delay(5000);
+  }
+
   MQTT_connect(); // Make sure ESP32 is connected to broker
 
   if(takeMeasurements)
@@ -98,8 +78,9 @@ void loop()
     }
   }
 
+  // Read commands
   Adafruit_MQTT_Subscribe *tempSubscription;
-  while((tempSubscription = mqtt.readSubscription(3000)))
+  while((tempSubscription = mqtt.readSubscription(4500))) // Listen for new message for X ms
   {
     // Verify subscription matches expected feed (not strictly necessary in a 1-feed program, but good practice)
     if(tempSubscription == &commandFeed)
@@ -141,7 +122,7 @@ void loop()
       }
       else
       {
-        Serial.println("Command not intended for PotWatcher. (Or an error has occurred)");
+        Serial.println("Command not intended for PotWatcher.");
       }
     }
   }
@@ -170,4 +151,38 @@ void MQTT_connect()
     delay(5000); // wait 5 seconds
   }
   Serial.println("MQTT Connected!");
+}
+
+void WiFi_connect()
+{
+  Serial.print("Connecting to WiFi network");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(150);
+    Serial.print(".");
+  }
+  Serial.print("\nConnected! IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+void GHN_setup()
+{
+  Serial.println("Connecting to Google Home...");
+  if (ghn.device(GOOGLE_HOME_NAME, "en") != true)
+  {
+    Serial.println(ghn.getLastError());
+    return;
+  }
+  Serial.print("Found Google Home (");
+  Serial.print(ghn.getIPAddress());
+  Serial.print(":");
+  Serial.print(ghn.getPort());
+  Serial.println(")");
+
+  // Startup phrase
+  String startupPhrase = "Pot Watcher available. The current threshold is set to " + String(EEPROM.read(0)) + " percent. You can change this by telling me to set the threshold.";
+  if (ghn.notify(startupPhrase.c_str()) != true)
+    Serial.println(ghn.getLastError());
 }
